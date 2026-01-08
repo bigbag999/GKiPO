@@ -1,0 +1,87 @@
+import cv2
+import numpy as np
+import requests
+import matplotlib.pyplot as plt
+from PIL import Image
+from io import BytesIO
+
+def download_image(url):
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        img_array = np.array(Image.open(BytesIO(response.content)).convert('RGB'))
+        return cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+    except Exception as e:
+        print(f"Error: {e}")
+        return None
+
+def get_quality_metrics(image):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    hist = cv2.calcHist([gray], [0], None, [256], [0, 256]).flatten()
+    total_pixels = gray.size
+    
+    shadow_clipping = np.sum(hist[:5]) / total_pixels
+    highlight_clipping = np.sum(hist[251:]) / total_pixels
+    mean_val = np.mean(gray)
+    std_val = np.std(gray)
+    
+    issues = []
+    if shadow_clipping > 0.05: issues.append("UNDerexposed (Shadow Clipping)")
+    if highlight_clipping > 0.05: issues.append("OVERexposed (Highlight Clipping)")
+    if std_val < 35: issues.append("LOW Contrast")
+    
+    return {
+        "is_faulty": len(issues) > 0,
+        "description": ", ".join(issues) if issues else "Good Quality",
+        "metrics": (shadow_clipping, highlight_clipping, mean_val, std_val),
+        "hist_gray": hist
+    }
+
+def improve_quality(image):
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+    l_enhanced = clahe.apply(l)
+    enhanced_lab = cv2.merge((l_enhanced, a, b))
+    return cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
+
+def display_results(img, enhanced_img, analysis):
+    fig = plt.figure(figsize=(14, 10))
+    
+    ax1 = fig.add_subplot(2, 2, 1)
+    ax1.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    ax1.set_title(f"Original - {analysis['description']}")
+    
+    ax2 = fig.add_subplot(2, 2, 2)
+    colors = ('b', 'g', 'r')
+    for i, col in enumerate(colors):
+        h = cv2.calcHist([img], [i], None, [256], [0, 256])
+        ax2.plot(h, color=col)
+    ax2.set_title("RGB Channels Histogram")
+    ax2.set_xlim([0, 256])
+
+    if enhanced_img is not None:
+        ax3 = fig.add_subplot(2, 2, 3)
+        ax3.imshow(cv2.cvtColor(enhanced_img, cv2.COLOR_BGR2RGB))
+        ax3.set_title("Enhanced Image (CLAHE Applied)")
+        
+        ax4 = fig.add_subplot(2, 2, 4)
+        for i, col in enumerate(colors):
+            h = cv2.calcHist([enhanced_img], [i], None, [256], [0, 256])
+            ax4.plot(h, color=col)
+        ax4.set_title("Enhanced RGB Histogram")
+        ax4.set_xlim([0, 256])
+        
+    plt.tight_layout()
+    plt.show()
+
+img_url = "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c8/F-15_Eagle_at_low_level.jpg/640px-F-15_Eagle_at_low_level.jpg"
+original = download_image(img_url)
+
+if original is not None:
+    analysis_results = get_quality_metrics(original)
+    improved = None
+    if analysis_results["is_faulty"]:
+        improved = improve_quality(original)
+    
+    display_results(original, improved, analysis_results)
